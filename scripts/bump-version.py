@@ -68,6 +68,10 @@ BRANCHES = [
     ("mips64", "mips64_softfloat", "mips64_softfloat"),
     ("riscv64", "riscv64", "riscv64"),
 ]
+# Only these must exist for the Makefile to be complete. Extra assets (armv6,
+# hardfloat variants ...) are recorded for auditing but may come and go across
+# releases without blocking the bump.
+REQUIRED_ARCHES = {key for _, key, _ in BRANCHES}
 
 UA = {"User-Agent": "NetForgeCN-lucky-version-bump/1.0"}
 
@@ -184,10 +188,16 @@ def main() -> int:
         ver = find_latest()
         release_dir = find_release_dir(ver)
         available = asset_names(release_dir, ver)
-        expected = {f"lucky_{ver}_Linux_{a}.tar.gz" for a in ALL_ARCHES}
-        missing = expected - available
+        missing = {
+            a for a in REQUIRED_ARCHES
+            if f"lucky_{ver}_Linux_{a}.tar.gz" not in available
+        }
         if missing:
-            raise RuntimeError("upstream is missing assets: " + ", ".join(sorted(missing)))
+            raise RuntimeError("upstream is missing required assets: " + ", ".join(sorted(missing)))
+        arches = [
+            a for a in ALL_ARCHES
+            if f"lucky_{ver}_Linux_{a}.tar.gz" in available
+        ]
 
         old = {}
         if ASSETS.exists():
@@ -201,10 +211,10 @@ def main() -> int:
             gh_output("version", ver)
             return 0
 
-        print(f"[bump] new release detected: {ver} ({release_dir})")
+        print(f"[bump] new release detected: {ver} ({release_dir}), {len(arches)} assets")
         hashes: dict[str, str] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(probe, ver, release_dir, a): a for a in ALL_ARCHES}
+            futures = {pool.submit(probe, ver, release_dir, a): a for a in arches}
             for future in concurrent.futures.as_completed(futures):
                 arch, digest = future.result()
                 hashes[arch] = digest
@@ -224,7 +234,7 @@ def main() -> int:
                     "sha256": hashes[a],
                     "url": f"{BASE}/{release_dir}/lucky_{ver}_Linux_{a}.tar.gz",
                 }
-                for a in ALL_ARCHES
+                for a in arches
             },
         }
         ASSETS.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

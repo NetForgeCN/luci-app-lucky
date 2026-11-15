@@ -85,16 +85,18 @@ if ASSETS.exists():
     data = json.loads(ASSETS.read_text(encoding="utf-8"))
     check(data.get("version") in core,
           "assets.json version differs from the pinned PKG_VERSION")
+    pinned_arches = set(re.findall(r"^[ \t]*LUCKY_ARCH:=(\S+)[ \t]*$", core, re.M))
     for arch, meta in data["assets"].items():
         digest = meta["sha256"]
         check(re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
               f"assets.json: invalid sha256 for {arch}")
-        if digest in core:
-            continue
-        # Hashes not referenced by the Makefile (armv6, hardfloat variants) are
-        # recorded for auditing only and need not appear there.
-        if arch not in ("armv6", "mips_hardfloat", "mips64_hardfloat", "mipsle_hardfloat"):
+        # Assets recorded for auditing only (e.g. armv6, hardfloat variants)
+        # need not appear in the Makefile; every architecture the Makefile can
+        # actually select MUST have its hash pinned there.
+        if arch in pinned_arches and digest not in core:
             errors.append(f"assets.json: hash for {arch} is not pinned in the Makefile")
+    check(pinned_arches <= set(data["assets"]),
+          "Makefile references an architecture that assets.json does not cover")
 else:
     errors.append("lucky/assets.json is missing (run scripts/bump-version.py)")
 
