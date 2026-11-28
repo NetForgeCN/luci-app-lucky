@@ -66,8 +66,11 @@ msgstr "Lucky 后台管理"
 msgid "Admin Panel Login Info"
 msgstr "管理后台登录信息"
 
-msgid "Default Auth"
-msgstr "默认账号/密码"
+msgid "Weak credential (built-in default or too simple)"
+msgstr "弱口令（内置默认值或过于简单）"
+
+msgid "Strong credential configured"
+msgstr "已设置强口令"
 
 msgid "Reset"
 msgstr "重置"
@@ -192,14 +195,38 @@ msgstr "留空则关闭安全入口，或输入以 \"/\" 开头的自定义路�
 msgid "Safe URL must start with \"/\" and contain only valid URL characters, or be left empty to disable."
 msgstr "安全入口必须以 \"/\" 开头且仅包含合法 URL 字符，或留空以禁用。"
 
-msgid "Reset Login Credentials"
-msgstr "重置登录凭证"
+msgid "Set Login Credentials"
+msgstr "设置登录凭证"
 
-msgid "Reset both admin account and password to \"666\"?"
-msgstr "确定将管理后台账号和密码均重置为 \"666\" 吗？"
+msgid "Set a strong admin account and password. The built-in 666/666 default is not allowed and will never be restored by this page."
+msgstr "请设置强账号与密码。不允许使用内置 666/666 默认值，本页也不会将其恢复。"
 
-msgid "Are you sure you want to enable external (WAN) access to the Lucky admin panel?"
-msgstr "确定要开启外网（WAN）访问 Lucky 管理后台吗？"
+msgid "Account must not be empty or a well-known default."
+msgstr "账号不能为空，也不能是常见默认值。"
+
+msgid "Password must be at least 8 characters and must not be a well-known default, all digits, or a repeated character."
+msgstr "密码至少 8 位，不能是常见默认值、纯数字或重复字符。"
+
+msgid "Password must differ from the account."
+msgstr "密码不能与账号相同。"
+
+msgid "Passwords do not match."
+msgstr "两次输入的密码不一致。"
+
+msgid "Account"
+msgstr "账号"
+
+msgid "New password"
+msgstr "新密码"
+
+msgid "Confirm password"
+msgstr "确认密码"
+
+msgid "Are you sure you want to enable external (WAN) access to the Lucky admin panel? The current credential passed the weak-password check, but WAN exposure remains high risk; consider a firewall restriction or a safe URL."
+msgstr "确定要开启外网（WAN）访问 Lucky 管理后台吗？当前凭证已通过弱口令检查，但暴露到 WAN 仍有高风险，建议配合防火墙限制或安全入口。"
+
+msgid "Refusing to expose the Lucky admin panel to WAN while the built-in or a weak credential is active. Set a strong account and password first."
+msgstr "当前仍在使用内置或弱口令，拒绝将 Lucky 管理后台暴露到 WAN。请先设置强账号与密码。"
 
 msgid "Are you sure you want to disable external (WAN) access to the Lucky admin panel?"
 msgstr "确定要关闭外网（WAN）访问 Lucky 管理后台吗？"

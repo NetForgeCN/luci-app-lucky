@@ -175,6 +175,23 @@ if data:
         check('m.name in ("lucky", "./lucky")' in bump_src and '.lstrip(' not in bump_src,
               "scripts/bump-version.py must validate tarball member names strictly")
 
+# Security regression guards: the LuCI page must never reveal the built-in
+# 666/666 credential, offer a one-click reset back to it, or expose the admin
+# panel to WAN without first checking the current credential's strength.
+config_js = read_text(ROOT / "htdocs" / "luci-static" / "resources" / "view" / "lucky" / "config.js")
+for bad in ['"666 / 666"', "openResetAuthModal", "Reset both admin account"]:
+    check(bad not in config_js,
+          f"config.js must not contain {bad!r} (weak credential disclosure/reset)")
+check("function isWeakCredential(" in config_js and "function isWeakPassword(" in config_js,
+      "config.js must implement weak-credential detection")
+check("WEAK_PASSWORDS" in config_js and "s.length < 8" in config_js,
+      "config.js credential checks must reject short and well-known passwords")
+check(config_js.index("isWeakCredential(conf.AdminAccount, conf.AdminPassword)") <
+      config_js.index("setLuckyConf(state.configDir, 'AllowInternetaccess'"),
+      "config.js must check credential strength before enabling WAN access")
+check("Set credentials" in config_js and "setLuckyConf(state.configDir, 'AdminAccount'" in config_js,
+      "config.js must offer an explicit strong-credential setup flow")
+
 if errors:
     print("[verify] FAILED:", file=sys.stderr)
     for err in errors:
