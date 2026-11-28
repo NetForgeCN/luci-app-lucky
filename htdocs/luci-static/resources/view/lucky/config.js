@@ -17,9 +17,11 @@ var callServiceList = rpc.declare({
 
 /* Security: Lucky's built-in default credential is 666/666. Never display it,
  * never offer a one-click reset back to it, and refuse WAN exposure while the
- * current credential is still weak. The checks are intentionally conservative
- * and purely client-side: the binary's -baseConfInfo exposes AdminAccount and
- * AdminPassword in clear text (see gdy666/lucky config/config.go). */
+ * current credential is still weak. The browser checks below are a first line
+ * of defence; the authoritative gates live in /usr/libexec/lucky-gate, which
+ * is the only target the rpcd ACL allows for -baseConfInfo / -setconf. It
+ * redacts AdminPassword from read responses and adds a server-computed
+ * WeakCredential flag. */
 var WEAK_PASSWORDS = [
 	'', '666', '666666', '66666666', '123', '123456', '12345678', '123456789',
 	'admin', 'admin123', 'password', 'password123', 'root', 'root123',
@@ -150,12 +152,11 @@ function showToast(msg, type) {
 }
 
 function setLuckyConf(configDir, key, value) {
-	var args = ['-setconf', '-key', key];
-	if (value !== '' && value !== null && value !== undefined)
-		args.push('-value', String(value));
-	args.push('-cd', configDir);
+	/* The core's -setconf argv is never exposed to a LuCI session directly:
+	 * lucky-gate validates the key/value and enforces credential + WAN gates. */
+	var args = ['set', key, value === null || value === undefined ? '' : String(value), configDir];
 
-	return fs.exec('/usr/bin/lucky', args).then(function(res) {
+	return fs.exec('/usr/libexec/lucky-gate', args).then(function(res) {
 		if (!res || res.code !== 0) {
 			var errMsg = (res && (res.stderr || res.stdout)) ? (res.stderr || res.stdout).trim() : _('Command execution failed.');
 			return Promise.reject(new Error(errMsg));
@@ -197,7 +198,7 @@ function queryLuckyData() {
 		} catch (e) {}
 
 		return resolveWithLog(
-			fs.exec('/usr/bin/lucky', ['-baseConfInfo', '-cd', configDir]),
+			fs.exec('/usr/libexec/lucky-gate', ['info', configDir]),
 			null, 'base configuration'
 		).then(function(confRes) {
 			var baseConf = null;
@@ -537,8 +538,9 @@ return view.extend({
 
 		function openToggleInternetModal(enable) {
 			if (enable) {
-				var conf = state.baseConf || {};
-				if (isWeakCredential(conf.AdminAccount, conf.AdminPassword)) {
+			var conf = state.baseConf || {};
+			if (conf.WeakCredential === true || conf.WeakCredential === 'true' ||
+			    isWeakCredential(conf.AdminAccount, conf.AdminPassword)) {
 					showToast(_('Refusing to expose the Lucky admin panel to WAN while the built-in or a weak credential is active. Set a strong account and password first.'), 'danger');
 					return;
 				}
@@ -647,7 +649,8 @@ return view.extend({
 			]);
 			dom.content(refs.compileTime, E('span', { 'class': 'lucky-val-text' }, detail.Date || '-'));
 
-			var weakAuth = isWeakCredential(conf.AdminAccount, conf.AdminPassword);
+			var weakAuth = (conf.WeakCredential === true || conf.WeakCredential === 'true') ||
+				isWeakCredential(conf.AdminAccount, conf.AdminPassword);
 			dom.content(refs.loginInfo, [
 				E('span', { 'class': 'lucky-badge ' + (weakAuth ? 'danger' : 'success') },
 					weakAuth ? _('Weak credential (built-in default or too simple)') : _('Strong credential configured')),

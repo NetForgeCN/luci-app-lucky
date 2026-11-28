@@ -5,7 +5,7 @@
 			"file": {
 				"/usr/bin/lucky": [ "stat" ],
 				"/usr/bin/lucky -info": [ "exec" ],
-				"/usr/bin/lucky -baseConfInfo *": [ "exec" ],
+				"/usr/libexec/lucky-gate info *": [ "exec" ],
 				"/usr/bin/luckyarch": [ "exec" ]
 			},
 			"ubus": {
@@ -16,7 +16,7 @@
 		},
 		"write": {
 			"file": {
-				"/usr/bin/lucky -setconf *": [ "exec" ],
+				"/usr/libexec/lucky-gate set *": [ "exec" ],
 				"/etc/init.d/lucky": [ "exec" ],
 				"/etc/init.d/lucky *": [ "exec" ]
 			},

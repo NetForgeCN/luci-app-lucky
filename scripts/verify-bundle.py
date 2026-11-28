@@ -18,6 +18,7 @@ LUCI_MK = ROOT / "Makefile"
 ASSETS = ROOT / "lucky" / "assets.json"
 BUMP = ROOT / "scripts" / "bump-version.py"
 ACL = ROOT / "root" / "usr" / "share" / "rpcd" / "acl.d" / "luci-app-lucky.json"
+GATE = ROOT / "root" / "usr" / "libexec" / "lucky-gate"
 RUNTIME_DIRS = [
     ROOT / "lucky" / "files",
     ROOT / "root",
@@ -97,25 +98,38 @@ check("logger -t lucky" in init and "return 1" in init,
 check("valid_confdir" in init,
       "lucky.init: UCI configdir must be validated before use")
 
-# 5. rpcd ACL must not grant unrestricted argv to the core binary.
+# 5. rpcd ACL must route sensitive argv through the server-side gate.
 acl = read_text(ACL)
 if acl:
     try:
         acls = json.loads(acl)
         group = acls.get("luci-app-lucky", {})
-        for perm in ("read", "write"):
-            files = group.get(perm, {}).get("file", {})
-            methods = files.get("/usr/bin/lucky", [])
-            check("exec" not in methods,
-                  f"ACL {perm}.file['/usr/bin/lucky'] must not grant unrestricted exec")
-        check("exec" in group.get("read", {}).get("file", {}).get(
-            "/usr/bin/lucky -info", []),
-            "ACL read must allow '/usr/bin/lucky -info' exec")
-        check(any(k.startswith("/usr/bin/lucky -setconf ")
-                  for k in group.get("write", {}).get("file", {})),
-              "ACL write must allow only the exact '/usr/bin/lucky -setconf ...' command")
+        read_files = group.get("read", {}).get("file", {})
+        write_files = group.get("write", {}).get("file", {})
+        check("exec" not in read_files.get("/usr/bin/lucky", []) and
+              "exec" not in write_files.get("/usr/bin/lucky", []),
+              "ACL must not grant unrestricted exec on /usr/bin/lucky")
+        for path in list(read_files) + list(write_files):
+            check("-baseConfInfo" not in path and "-setconf" not in path,
+                  f"ACL must not expose core argv directly: {path}")
+        check("exec" in read_files.get("/usr/bin/lucky -info", []),
+              "ACL read must allow '/usr/bin/lucky -info' exec")
+        check("exec" in read_files.get("/usr/libexec/lucky-gate info *", []),
+              "ACL read must allow '/usr/libexec/lucky-gate info *' exec")
+        check("exec" in write_files.get("/usr/libexec/lucky-gate set *", []),
+              "ACL write must allow '/usr/libexec/lucky-gate set *' exec")
     except (ValueError, AttributeError) as exc:
         errors.append(f"ACL JSON is invalid: {exc}")
+
+# 5b. The gate itself must exist, be executable and keep the security gates.
+check(GATE.is_file(), "root/usr/libexec/lucky-gate is missing")
+if GATE.is_file():
+    check(bool(GATE.stat().st_mode & 0o111), "lucky-gate must be executable")
+    gate = read_text(GATE)
+    for needle in ("weak_password()", "weak_credential()", "WeakCredential",
+                   "refusing WAN exposure while credentials are weak",
+                   'exec "$PROG" -setconf'):
+        check(needle in gate, f"lucky-gate must contain {needle!r}")
 
 # 6. Pinned hashes in the Makefile must match assets.json and the bump helper.
 data: dict = {}
@@ -191,6 +205,14 @@ check(config_js.index("isWeakCredential(conf.AdminAccount, conf.AdminPassword)")
       "config.js must check credential strength before enabling WAN access")
 check("Set credentials" in config_js and "setLuckyConf(state.configDir, 'AdminAccount'" in config_js,
       "config.js must offer an explicit strong-credential setup flow")
+check("fs.exec('/usr/bin/lucky', ['-baseConfInfo'" not in config_js and
+      "fs.exec('/usr/bin/lucky', args)" not in config_js,
+      "config.js must not call the core's baseConfInfo/setconf directly")
+check("fs.exec('/usr/libexec/lucky-gate', ['info'" in config_js and
+      "fs.exec('/usr/libexec/lucky-gate', args)" in config_js,
+      "config.js must use lucky-gate for base configuration and setconf")
+check("conf.WeakCredential" in config_js,
+      "config.js must honour the server-computed WeakCredential flag")
 
 if errors:
     print("[verify] FAILED:", file=sys.stderr)
@@ -199,5 +221,5 @@ if errors:
     sys.exit(1)
 
 print("[verify] OK: core is pinned, sha256-verified, installed into the image,")
-print("         LuCI depends on +lucky, ACLs are least-privilege, and no")
-print("         runtime download path exists.")
+print("         LuCI depends on +lucky, sensitive argv is routed through the")
+print("         server-side lucky-gate, and no runtime download path exists.")

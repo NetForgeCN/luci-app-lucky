@@ -1,0 +1,169 @@
+#!/bin/sh
+# Server-side gate for Lucky LuCI operations.
+#
+# The Lucky core's -baseConfInfo prints AdminPassword in clear text and its
+# -setconf accepts arbitrary keys. Granting those argv patterns to a LuCI
+# session therefore bypasses any browser-side weak-credential or WAN gate.
+# The rpcd ACL only allows this wrapper for those two operations; the wrapper
+# validates the request, redacts the password from read responses and refuses
+# weak credentials / WAN exposure before invoking the core.
+#
+# Note: the write path still passes the new password to the core as an argv
+# element because the upstream CLI has no stdin/file value option. That value
+# is no longer visible to a LuCI session through -baseConfInfo.
+set -eu
+
+PROG=/usr/bin/lucky
+DEFAULT_CONFDIR=/etc/config/lucky.daji
+
+log() { logger -t lucky-gate -p daemon.warn "$*" 2>/dev/null || true; }
+fail() {
+	log "$*"
+	printf 'lucky-gate: %s\n' "$*" >&2
+	exit 1
+}
+
+valid_confdir() {
+	local dir="$1"
+	[ -n "$dir" ] || return 1
+	case "$dir" in /*) ;; *) return 1 ;; esac
+	case "$dir" in *..*) return 1 ;; esac
+	case "$dir" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-]*) return 1 ;; esac
+	[ ! -L "$dir" ] || return 1
+	return 0
+}
+
+weak_account() {
+	local a
+	a=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+	[ -n "$a" ] || return 0
+	case "$a" in
+		666|666666|123|admin|root|lucky|test|guest|user|password|123456) return 0 ;;
+	esac
+	return 1
+}
+
+weak_password() {
+	local p pl first
+	p=$1
+	[ -n "$p" ] || return 0
+	pl=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
+	case "$pl" in
+		666|666666|66666666|123|123456|12345678|admin|admin123|password|password123|root|root123|lucky|lucky666|qwerty|abc123|111111|000000|123456|12345678|123456789) return 0 ;;
+	esac
+	[ "${#p}" -ge 8 ] || return 0
+	case "$p" in *[!0-9]*) ;; *) return 0 ;; esac
+	first=$(printf '%s' "$p" | cut -c1)
+	if printf '%s\n' "$p" | grep -q "^\\(.\\)\\1*\$"; then
+		return 0
+	fi
+	return 1
+}
+
+weak_credential() {
+	weak_password "$2" && return 0
+	weak_account "$1" && return 0
+	[ "$1" != "$2" ] || return 0
+	return 1
+}
+
+# Extract a simple JSON string field. Lucky emits compact JSON; flatten any
+# newlines so a field/value split across lines is still found.
+json_string_field() {
+	local json field re
+	json=$(printf '%s' "$1" | tr -d '\n\r')
+	field=$2
+	re="\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\""
+	printf '%s\n' "$json" |
+		grep -o "$re" | head -n 1 |
+		sed -E "s/^\"$field\"[[:space:]]*:[[:space:]]*\"//; s/\"$//"
+}
+
+read_conf() {
+	[ -x "$PROG" ] || fail "Lucky core binary not found"
+	"$PROG" -baseConfInfo -cd "$1" 2>/dev/null || fail "cannot read Lucky configuration"
+}
+
+# Strip AdminPassword and inject a server-computed WeakCredential flag so the
+# browser never needs the plaintext password to render the security badge.
+redact_info() {
+	local json weak
+	json=$1
+	weak=$2
+	printf '%s\n' "$json" | tr -d '\n\r' |
+		sed -E \
+			-e 's/("AdminPassword"[[:space:]]*:[[:space:]]*)"([^"\\]|\\.)*"/\1"<redacted>"/g' \
+			-e "s/(\"BaseConfigure\"[[:space:]]*:[[:space:]]*\{)/\1\"WeakCredential\":$weak,/"
+}
+
+cmd_info() {
+	[ "$#" -eq 1 ] || fail "usage: lucky-gate info <configdir>"
+	local dir="$1" json account password weak out
+	valid_confdir "$dir" || fail "invalid configdir: $dir"
+	json=$(read_conf "$dir")
+	account=$(json_string_field "$json" AdminAccount)
+	password=$(json_string_field "$json" AdminPassword)
+	if weak_credential "$account" "$password"; then
+		weak=true
+	else
+		weak=false
+	fi
+	out=$(redact_info "$json" "$weak")
+	printf '%s\n' "$out"
+}
+
+cmd_set() {
+	[ "$#" -eq 3 ] || fail "usage: lucky-gate set <key> <value> <configdir>"
+	local key="$1" value="$2" dir="$3" json account password
+	valid_confdir "$dir" || fail "invalid configdir: $dir"
+
+	case "$key" in
+		AdminAccount|AdminPassword|AllowInternetaccess|AdminWebListenPort|SetSafeURL) ;;
+		*) fail "unsupported config key: $key" ;;
+	esac
+
+	case "$key" in
+		AdminWebListenPort)
+			case "$value" in ''|*[!0-9]*) fail "invalid admin port" ;; esac
+			[ "$value" -ge 1 ] && [ "$value" -le 65535 ] || fail "invalid admin port"
+			;;
+		SetSafeURL)
+			[ -n "$value" ] || fail "empty SafeURL"
+			case "$value" in *[!A-Za-z0-9/._-]*) fail "invalid SafeURL" ;; esac
+			;;
+	esac
+
+	case "$key" in
+		AdminAccount)
+			weak_account "$value" && fail "weak admin account rejected"
+			;;
+		AdminPassword)
+			json=$(read_conf "$dir")
+			account=$(json_string_field "$json" AdminAccount)
+			weak_password "$value" && fail "weak admin password rejected"
+			[ "$value" != "$account" ] || fail "password must differ from account"
+			;;
+		AllowInternetaccess)
+			case "$value" in
+				true|TRUE|True|1)
+					json=$(read_conf "$dir")
+					account=$(json_string_field "$json" AdminAccount)
+					password=$(json_string_field "$json" AdminPassword)
+					weak_credential "$account" "$password" &&
+						fail "refusing WAN exposure while credentials are weak"
+					;;
+			esac
+			;;
+	esac
+
+	exec "$PROG" -setconf -key "$key" -value "$value" -cd "$dir"
+}
+
+[ "$#" -ge 1 ] || fail "missing command"
+cmd=$1
+shift
+case "$cmd" in
+	info) cmd_info "$@" ;;
+	set) cmd_set "$@" ;;
+	*) fail "unknown command: $cmd" ;;
+esac
