@@ -15,6 +15,43 @@ var callServiceList = rpc.declare({
 	expect: { '': {} }
 });
 
+/* Security: Lucky's built-in default credential is 666/666. Never display it,
+ * never offer a one-click reset back to it, and refuse WAN exposure while the
+ * current credential is still weak. The checks are intentionally conservative
+ * and purely client-side: the binary's -baseConfInfo exposes AdminAccount and
+ * AdminPassword in clear text (see gdy666/lucky config/config.go). */
+var WEAK_PASSWORDS = [
+	'', '666', '666666', '66666666', '123', '123456', '12345678', '123456789',
+	'admin', 'admin123', 'password', 'password123', 'root', 'root123',
+	'lucky', 'lucky666', 'qwerty', 'abc123', '111111', '000000'
+];
+
+function isWeakPassword(pw) {
+	if (pw === null || pw === undefined)
+		return true;
+	var s = String(pw);
+	if (WEAK_PASSWORDS.indexOf(s.toLowerCase()) !== -1)
+		return true;
+	if (s.length < 8)
+		return true;
+	if (/^\d+$/.test(s))
+		return true;
+	if (/^(.)\1+$/.test(s))
+		return true;
+	return false;
+}
+
+function isWeakCredential(account, password) {
+	if (isWeakPassword(password))
+		return true;
+	var a = (account === null || account === undefined) ? '' : String(account).toLowerCase();
+	if (!a || WEAK_PASSWORDS.indexOf(a) !== -1)
+		return true;
+	if (a === String(password).toLowerCase())
+		return true;
+	return false;
+}
+
 /* L.resolveDefault() silently swallows every failure. Keep the fallback
  * behaviour, but leave a diagnostic in the browser console so a broken ACL or
  * a missing binary is not indistinguishable from an offline device. */
@@ -432,31 +469,83 @@ return view.extend({
 			inputEl.focus();
 		}
 
-		function openResetAuthModal() {
-			ui.showModal(_('Reset Login Credentials'), [
-				E('p', {}, _('Reset both admin account and password to "666"?')),
+		function openSetAuthModal() {
+			var curAccount = (state.baseConf && state.baseConf.AdminAccount) || '';
+			var accountInput = E('input', {
+				'type': 'text', 'class': 'cbi-input-text', 'value': curAccount,
+				'style': 'width: 100%; max-width: 240px;', 'autocomplete': 'off'
+			});
+			var pwInput = E('input', {
+				'type': 'password', 'class': 'cbi-input-text', 'value': '',
+				'style': 'width: 100%; max-width: 240px;', 'autocomplete': 'new-password'
+			});
+			var pwConfirmInput = E('input', {
+				'type': 'password', 'class': 'cbi-input-text', 'value': '',
+				'style': 'width: 100%; max-width: 240px;', 'autocomplete': 'new-password'
+			});
+			var errEl = E('div', { 'style': 'color: #e03131; margin-top: 6px; display: none;' });
+
+			var fail = function(msg) {
+				errEl.textContent = msg;
+				errEl.style.display = 'block';
+			};
+
+			var submit = function() {
+				errEl.style.display = 'none';
+				var account = String(accountInput.value || '').trim();
+				var password = String(pwInput.value || '');
+				var confirm = String(pwConfirmInput.value || '');
+
+				if (!account || WEAK_PASSWORDS.indexOf(account.toLowerCase()) !== -1)
+					return fail(_('Account must not be empty or a well-known default.'));
+				if (isWeakPassword(password))
+					return fail(_('Password must be at least 8 characters and must not be a well-known default, all digits, or a repeated character.'));
+				if (password === account)
+					return fail(_('Password must differ from the account.'));
+				if (password !== confirm)
+					return fail(_('Passwords do not match.'));
+
+				ui.hideModal();
+				applyConfAndReload(function() {
+					return setLuckyConf(state.configDir, 'AdminAccount', account)
+						.then(function() {
+							return setLuckyConf(state.configDir, 'AdminPassword', password);
+						});
+				});
+			};
+
+			ui.showModal(_('Set Login Credentials'), [
+				E('p', {}, _('Set a strong admin account and password. The built-in 666/666 default is not allowed and will never be restored by this page.')),
+				E('div', { 'style': 'margin: 10px 0;' }, [
+					E('label', {}, _('Account')), accountInput
+				]),
+				E('div', { 'style': 'margin: 10px 0;' }, [
+					E('label', {}, _('New password')), pwInput
+				]),
+				E('div', { 'style': 'margin: 10px 0;' }, [
+					E('label', {}, _('Confirm password')), pwConfirmInput
+				]),
+				errEl,
 				E('div', { 'class': 'right' }, [
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
 					' ',
-					E('button', {
-						'class': 'btn cbi-button-reset',
-						'click': function() {
-							ui.hideModal();
-							applyConfAndReload(function() {
-								return setLuckyConf(state.configDir, 'AdminAccount', '666')
-									.then(function() {
-										return setLuckyConf(state.configDir, 'AdminPassword', '666');
-									});
-							});
-						}
-					}, _('Reset'))
+					E('button', { 'class': 'btn cbi-button-positive', 'click': submit }, _('Save'))
 				])
 			]);
+			accountInput.focus();
 		}
 
 		function openToggleInternetModal(enable) {
+			if (enable) {
+				var conf = state.baseConf || {};
+				if (isWeakCredential(conf.AdminAccount, conf.AdminPassword)) {
+					showToast(_('Refusing to expose the Lucky admin panel to WAN while the built-in or a weak credential is active. Set a strong account and password first.'), 'danger');
+					return;
+				}
+			}
+
 			var promptText = enable
-				? _('Are you sure you want to enable external (WAN) access to the Lucky admin panel?')
+				? _('Are you sure you want to enable external (WAN) access to the Lucky admin panel? The current credential passed the weak-password check, but WAN exposure remains high risk; consider a firewall restriction or a safe URL.')
 				: _('Are you sure you want to disable external (WAN) access to the Lucky admin panel?');
 
 			ui.showModal(_('Confirm Operation'), [
@@ -558,14 +647,16 @@ return view.extend({
 			]);
 			dom.content(refs.compileTime, E('span', { 'class': 'lucky-val-text' }, detail.Date || '-'));
 
+			var weakAuth = isWeakCredential(conf.AdminAccount, conf.AdminPassword);
 			dom.content(refs.loginInfo, [
-				E('span', { 'class': 'lucky-val-text' }, _('Default Auth') + ': '),
-				E('span', { 'class': 'lucky-code-chip' }, '666 / 666'),
+				E('span', { 'class': 'lucky-badge ' + (weakAuth ? 'danger' : 'success') },
+					weakAuth ? _('Weak credential (built-in default or too simple)') : _('Strong credential configured')),
+				' ',
 				E('button', {
 					'type': 'button',
-					'class': 'btn cbi-button cbi-button-reset',
-					'click': openResetAuthModal
-				}, _('Reset'))
+					'class': 'btn cbi-button cbi-button-edit',
+					'click': openSetAuthModal
+				}, _('Set credentials'))
 			]);
 
 			dom.content(refs.httpPort, [
