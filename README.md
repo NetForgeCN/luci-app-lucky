@@ -8,7 +8,7 @@
 |---|---|
 | 核心必须存在于编译后的固件 | `lucky/Makefile` 用标准 `PKG_SOURCE` 在 `make download` 阶段下载官方静态二进制，`Package/lucky/install` 把它 `INSTALL_BIN` 到 `/usr/bin/lucky`，随 rootfs 一起打包 |
 | 开机零联网 | `lucky/files/lucky.init` 检测不到二进制只写日志并 `return 1`；`init.d` / `uci-defaults` / `postinst` / JS 页面里没有任何下载核心的语句 |
-| 可复现 | 版本、发布目录、13 个 Linux 架构的 sha256 全部写在 `lucky/Makefile` 里。`make download` 会用 `PKG_HASH` 校验，校验不过直接失败 |
+| 可复现 | 版本、发布目录与 **9 个构建架构**的 sha256 写在 `lucky/Makefile` 里：`x86_64`、`i386`、`aarch64`、`armv7`、`armv5`、`mips`、`mipsel`、`mips64`、`riscv64`（`arm` 按 `CPU_TYPE` 选 armv7/armv5）。`make download` 用 `PKG_HASH` 校验，校验不过直接失败 |
 | 自动跟进最新版 | 由 CI 每天检查官网并改写这个 pin，**不是**编译期现场探测 |
 
 ## 自动更新机制
@@ -19,7 +19,8 @@
         ▼
 scripts/bump-version.py
         │  下载 13 个 Linux tar.gz → 算 sha256 → 校验包内含可执行 ELF lucky
-        │  改写 lucky/Makefile 的 AUTO-GENERATED 块 + lucky/assets.json
+        │  改写 lucky/assets.json（13 个资产的完整清单）
+        │  只把 Makefile 支持的 9 个架构写入 AUTO-GENERATED 块的 PKG_HASH
         ▼
 .github/workflows/bump.yml  commit & push
         │
@@ -31,7 +32,9 @@ scripts/bump-version.py
 
 编译期永远不联网问"最新版"，每天只有版本真的变了才会提交一次。新版 tar 结构若改变（不再是平铺的 `lucky` ELF），脚本报错、workflow 变红、旧 pin 保持不动。若想固定在某个版本，暂停 `bump.yml` 即可。
 
-在 Actions 里手动 `Run workflow` 时勾选 **force**，可强制重新下载并校验全部 13 个资产、刷新 pin；不勾选时若已是最新版则不会产生提交。
+在 Actions 里手动 `Run workflow` 时勾选 **force**，可强制重新下载并校验全部 13 个资产、刷新 `assets.json` 与 Makefile 中受支持的 9 个架构 pin；不勾选时若已是最新版则不会产生提交。
+
+**架构覆盖口径**：`assets.json` 记录官网发布的全部 13 个 tar.gz（含 `armv6`、`mips_hardfloat`、`mipsle_hardfloat`、`mips64_hardfloat`），但 `lucky/Makefile` 只为上表 9 个架构生成 `PKG_HASH`。未 pin 的 4 个架构不在本仓库的构建目标内——`Build/Prepare` 遇到不支持的 `ARCH` 会 `exit 1`，`DEPENDS` 也限定在这 9 个架构，不会出现"下载了却校验失败"的静默坏包。x86_64 是主要目标，其他架构沿用上游默认行为。
 
 当前版本：**3.8.1**（`v3.8.1/3.8.1_lucky/`），x86_64 核心 17.08 MiB，静态链接（ELF 无 `PT_INTERP` / `PT_DYNAMIC`），固件约增加 17 MiB。
 
